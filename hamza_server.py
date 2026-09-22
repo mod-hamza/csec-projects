@@ -21,3 +21,17 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# packet helpers
+def send_pkt(conn, *parts):
+    msg = '|'.join(str(p) for p in parts) + '\n'
+    conn.sendall(msg.encode())
+
+def recv_pkt(conn):
+    buf = b''
+    while not buf.endswith(b'\n'):
+        chunk = conn.recv(4096)
+        if not chunk:
+            return []
+        buf += chunk
+    return buf.decode().strip().split('|')
