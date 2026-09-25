@@ -88,3 +88,12 @@ def main():
         threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
 
 if __name__ == '__main__': main()
+
+# added by Akour — prompt command runs shell commands on server
+def handle_prompt(conn, cmd, s):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        out = (r.stdout + r.stderr).strip() or '(no output)'
+        send_pkt(conn, 'SC', enc(out, s))
+    except Exception as e:
+        send_pkt(conn, 'EE', 'E004', str(e))
