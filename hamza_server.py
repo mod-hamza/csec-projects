@@ -97,3 +97,22 @@ def handle_prompt(conn, cmd, s):
         send_pkt(conn, 'SC', enc(out, s))
     except Exception as e:
         send_pkt(conn, 'EE', 'E004', str(e))
+
+# added by Aya — file read/write handlers
+def handle_openread(conn, fname, s):
+    try:
+        send_pkt(conn, 'DP', enc(open(fname).read(), s))
+    except FileNotFoundError: send_pkt(conn, 'EE', 'E002', 'file not found')
+    except PermissionError:   send_pkt(conn, 'EE', 'E003', 'permission denied')
+
+def handle_openwrite(conn, fname, s):
+    try:
+        s.wfile = open(fname, 'w')
+        send_pkt(conn, 'SC', f'ready to write {fname}')
+    except PermissionError: send_pkt(conn, 'EE', 'E003', 'permission denied')
+
+def handle_dp(conn, data, s):
+    if s.wfile is None:
+        send_pkt(conn, 'EE', 'E004', 'no file open'); return
+    s.wfile.write(dec(data, s)); s.wfile.flush()
+    send_pkt(conn, 'SC', 'data written')
