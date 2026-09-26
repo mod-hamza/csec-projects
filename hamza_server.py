@@ -116,3 +116,22 @@ def handle_dp(conn, data, s):
         send_pkt(conn, 'EE', 'E004', 'no file open'); return
     s.wfile.write(dec(data, s)); s.wfile.flush()
     send_pkt(conn, 'SC', 'data written')
+
+# added by Kawtar — main operation loop
+def operate(conn, s):
+    while True:
+        pkt = recv_pkt(conn)
+        if not pkt: break
+        pt = pkt[0].strip().upper()
+        if pt == 'END':
+            if s.wfile: s.wfile.close(); s.wfile = None
+            send_pkt(conn, 'SC', 'session closed'); break
+        if pt == 'DP':
+            handle_dp(conn, pkt[1] if len(pkt) > 1 else '', s); continue
+        if pt != 'CM' or len(pkt) < 3:
+            send_pkt(conn, 'EE', 'E001', 'bad packet'); continue
+        ct = pkt[1].strip().lower(); args = pkt[2] if len(pkt) > 2 else ''
+        if ct == 'prompt':      handle_prompt(conn, args, s)
+        elif ct == 'openread':  handle_openread(conn, args, s)
+        elif ct == 'openwrite': handle_openwrite(conn, args, s)
+        else: send_pkt(conn, 'EE', 'E001', 'unknown command')
