@@ -48,3 +48,15 @@ def main():
     sock.close()
 
 if __name__ == '__main__': main()
+
+# command helpers — added by Aya
+def send_cmd(sock, cmd_type, args):
+    sock.sendall(f'CM|{cmd_type}|{args}\n'.encode())
+
+def read_response(sock):
+    buf = b''
+    while not buf.endswith(b'\n'):
+        c = sock.recv(4096)
+        if not c: break
+        buf += c
+    return buf.decode().strip().split('|')
