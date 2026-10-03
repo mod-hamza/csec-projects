@@ -20,14 +20,27 @@
 #define BUF 4096
 
 
-/* send a packet: adds a newline at the end */
+/*
+ * send_pkt - sends a packet to the server
+ *
+ * We add a newline at the end because the server reads until '\n' to know
+ * where the packet ends. snprintf into a local buffer keeps us from writing
+ * past the end.
+ */
 void send_pkt(int sock, const char *msg) {
     char buf[BUF];
     snprintf(buf, sizeof(buf), "%s\n", msg);
     send(sock, buf, strlen(buf), 0);
 }
 
-/* receive a packet: reads until newline, strips it, null-terminates */
+/*
+ * recv_pkt - reads one packet from the server into buf
+ *
+ * We read one byte at a time and stop when we hit a newline. It's
+ * the simplest way to handle this without a partial-read
+ * buffer. The newline gets stripped before returning.
+ * Returns the number of bytes read, or -1 if the connection dropped.
+ */
 int recv_pkt(int sock, char *buf, int maxlen) {
     int n = 0;
     char c;
@@ -41,7 +54,13 @@ int recv_pkt(int sock, char *buf, int maxlen) {
     return n;
 }
 
-/* pull the first field (before the first '|') out of a packet */
+/*
+ * first_field - pulls out the first pipe-delimited field from a packet
+ *
+ * Our packets look like "TYPE|field1|field2", so we just find the first
+ * pipe and copy everything before it. If there's no pipe, we copy the
+ * whole string. Used to check what type of packet the server sent back.
+ */
 void first_field(const char *pkt, char *out, int maxlen) {
     const char *pipe = strchr(pkt, '|');
     int len = pipe ? (int)(pipe - pkt) : (int)strlen(pkt);
@@ -52,6 +71,10 @@ void first_field(const char *pkt, char *out, int maxlen) {
 
 
 int main(int argc, char *argv[]) {
+    /*
+     * We need exactly three arguments: server IP, port, and the filename
+     * to read. If the user didn't provide them, print usage and exit.
+     */
     if (argc < 4) {
         fprintf(stderr, "usage: %s <server_ip> <port> <filename>\n", argv[0]);
         return 1;
@@ -81,7 +104,10 @@ int main(int argc, char *argv[]) {
 
     char buf[BUF], ptype[16], cmd[BUF];
 
-    /* setup phase: send SS (no encryption) */
+    /*
+     * Setup phase: send SS with encryption flag = 0 (no encryption in C client).
+     * The server should reply with CC to confirm the session is ready.
+     */
     send_pkt(sock, "SS|RFMP|v1.0|0");
 
     /* wait for CC */
@@ -98,7 +124,10 @@ int main(int argc, char *argv[]) {
     }
     printf("handshake ok\n");
 
-    /* send openRead command */
+    /*
+     * Send the openRead command with the filename the user gave us.
+     * The server will either reply with DP (file data) or EE (error).
+     */
     snprintf(cmd, sizeof(cmd), "CM|openRead|%s", fname);
     send_pkt(sock, cmd);
 
@@ -121,7 +150,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "unexpected response: %s\n", buf);
     }
 
-    /* closing phase */
+    /* closing phase: send END and wait for the server's goodbye before closing */
     send_pkt(sock, "END");
     recv_pkt(sock, buf, sizeof(buf));
     printf("done\n");

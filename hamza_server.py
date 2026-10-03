@@ -1,5 +1,5 @@
 # hamza_server.py
-# RFMP Server - Spring 2026
+# RFMP Server
 # Group: Hamza (415001013), Akour (433002101), Kawtar (433006015), Aya (433000484)
 #
 # How it works:
@@ -26,11 +26,27 @@ PORT = 9090
 # ── tiny helpers ────────────────────────────────────────────────────────────
 
 def send_pkt(conn, *parts):
+    """
+    Sends a packet to the client.
+
+    We connect all the pieces with pipes, and add a newline at the end.
+    This is simply the format we specified for packets: fields separated by pipes,
+    with a newline signifying that the packet ends.
+    For example: send_pkt(conn, 'SC', 'hello') sends "SC|hello\n"
+    """
     # packets are pipe-separated, newline-terminated  e.g. "SC|done\n"
     msg = '|'.join(str(p) for p in parts) + '\n'
     conn.sendall(msg.encode())
 
 def recv_pkt(conn):
+    """
+    Reads one packet from the client and returns it as a list of fields.
+
+    We repeatedly call recv() until we see the newline character, signifying
+    that we have received the entire packet. We then split it on pipes to
+    extract individual fields. An empty list is returned if the connection has
+    been lost.
+    """
     # read until we hit the newline, then split on pipes
     buf = b''
     while not buf.endswith(b'\n'):  # keep reading until full packet arrives
@@ -45,6 +61,15 @@ def recv_pkt(conn):
 # Basic letter-shift cipher. Shift 13 = ROT13 (its own inverse).
 
 def caesar(text, shift):
+    """
+    Shifts every letter in the text by 'shift' positions in the alphabet.
+    Non-letter characters (spaces, punctuation, numbers) are left alone.
+
+    Shift value 13 was used as the default, which corresponds to ROT13.
+    The advantage of using ROT13 is the fact that applying it twice returns
+    you to your starting point; therefore, the same algorithm can be used
+    for encryption and decryption.
+    """
     out = []
     for ch in text:
         if ch.isalpha():
@@ -60,12 +85,26 @@ def caesar(text, shift):
 # to the ciphertext so the receiver can decrypt it.
 
 def aes_enc(text, key):
+    """
+    Encrypts a string using AES in CBC mode.
+
+    The random IV is created for each call such that even with the same
+    plaintext, each execution will give rise to different ciphertext. We concatenate
+    the IV to the encrypted text and then encode all of that using base64.
+    """
     iv = get_random_bytes(16)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     ct = cipher.encrypt(pad(text.encode(), 16))
     return base64.b64encode(iv + ct).decode()
 
 def aes_dec(b64, key):
+    """
+    Decrypts a base64 string that was encrypted with aes_enc above.
+
+    First, we decode the base64-encoded string, and then extract the first 16 bytes as IV.
+    The remaining string will be our ciphertext. We decrypt it and strip padding to obtain
+    the plain text.
+    """
     raw = base64.b64decode(b64)
     cipher = AES.new(key, AES.MODE_CBC, raw[:16])
     return unpad(cipher.decrypt(raw[16:]), 16).decode()
@@ -74,6 +113,13 @@ def aes_dec(b64, key):
 # ── per-client session state ─────────────────────────────────────────────────
 
 class Session:
+    """
+    Holds all the state for one connected client.
+
+    Each client has a unique Session instance to avoid conflict between
+    them. It determines if the connection is secure, which encryption
+    algorithm is being used, session key, and if a file is open to write into.
+    """
     def __init__(self):
         self.secured = False
         self.algo = None        # 'AES' or 'CAESAR'
@@ -83,6 +129,10 @@ class Session:
 
 
 def enc(text, s):
+    """
+    Encrypts text using whatever algorithm the session is using.
+    If the session isn't secured, it just returns the text unchanged.
+    """
     if not s.secured:
         return text
     if s.algo == 'AES':
@@ -90,6 +140,11 @@ def enc(text, s):
     return caesar(text, s.key)
 
 def dec(text, s):
+    """
+    Decrypts text using the session's algorithm.
+    For Caesar, decrypting is just encrypting with a negative shift.
+    If not secured, returns the text as-is.
+    """
     if not s.secured:
         return text
     if s.algo == 'AES':
@@ -101,6 +156,17 @@ def dec(text, s):
 # Handles the SS -> CC -> (EC) handshake at the start of every connection.
 
 def setup(conn, s):
+    """
+    Runs the setup handshake with a newly connected client.
+
+    The client sends SS first. If it wants encryption, we generate an RSA
+    key pair, send our public key inside the CC reply, then wait for the
+    client to send back an EC packet with the session key encrypted under
+    our public key. We decrypt that to get the shared session key.
+
+    If no encryption, we just send CC and we're done.
+    Returns True if setup went fine, False if something went wrong.
+    """
     pkt = recv_pkt(conn)
 
     # expect: SS | RFMP | v1.0 | 0-or-1
@@ -143,6 +209,14 @@ def setup(conn, s):
 # ── operation phase ──────────────────────────────────────────────────────────
 
 def handle_prompt(conn, cmd, s):
+    """
+    Runs a shell command on the server and sends the output back.
+
+    We use subprocess with a 10-second timeout so a slow command doesn't
+    block forever. stdout and stderr are combined so the client sees
+    everything. The output is encrypted before sending if the session
+    is in secure mode.
+    """
     # run the shell command, send back its output
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
@@ -152,6 +226,14 @@ def handle_prompt(conn, cmd, s):
         send_pkt(conn, 'EE', 'E004', str(e))
 
 def handle_openread(conn, filename, s):
+    """
+    Reads a file and sends its contents back to the client.
+
+    The content is encrypted with enc() before sending, so in AES mode
+    the client receives a base64 blob it has to decrypt, not raw text.
+    We catch the two most common errors separately so the client gets a
+    meaningful error code.
+    """
     try:
         content = open(filename).read()
         send_pkt(conn, 'DP', enc(content, s))
@@ -161,6 +243,13 @@ def handle_openread(conn, filename, s):
         send_pkt(conn, 'EE', 'E003', 'permission denied')
 
 def handle_openwrite(conn, filename, s):
+    """
+    Opens a file for writing and tells the client we're ready.
+
+    The file handle is stored in the session object (s.wfile),
+    such that when the client actually sends us the data in a
+    DP packet, handle_dp knows where to put it.
+    """
     try:
         s.wfile = open(filename, 'w')
         send_pkt(conn, 'SC', f'ready to write {filename}')
@@ -168,6 +257,14 @@ def handle_openwrite(conn, filename, s):
         send_pkt(conn, 'EE', 'E003', 'permission denied')
 
 def handle_dp(conn, data, s):
+    """
+    Receives the data payload from the client and writes it to the open file.
+
+    Encryption of the received data is already done, so the decryption of
+    it happens using the dec() method. This will only work if the
+    handle_openwrite function was executed before – in case s.wfile is
+    None we return an error message.
+    """
     # data packet — write decrypted content to the open file
     if s.wfile is None:
         send_pkt(conn, 'EE', 'E004', 'no file open for writing')
@@ -180,6 +277,14 @@ def handle_dp(conn, data, s):
         send_pkt(conn, 'EE', 'E004', str(e))
 
 def operate(conn, s):
+    """
+    Main loop for handling commands after setup is done.
+
+    We read these packets until we receive the signal “END” from the client.
+    Each packet received is either a CM or a DP packet. We classify
+    the CM packets according to their respective commands and send them to
+    their respective handlers.
+    """
     while True:
         pkt = recv_pkt(conn)
         if not pkt:
@@ -218,6 +323,14 @@ def operate(conn, s):
 # ── thread entry point ───────────────────────────────────────────────────────
 
 def handle_client(conn, addr):
+    """
+    Entry point for each client thread.
+
+    Every time a client connects, main() starts up a new thread that runs
+    this function. It runs setup, then operate, then cleans up when done.
+    The try/finally makes sure the socket and any open file get closed
+    even if something crashes mid-session.
+    """
     print(f'connected: {addr}')
     s = Session()
     try:
@@ -235,6 +348,14 @@ def handle_client(conn, addr):
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    """
+    Creates the server socket and listens for incoming connections.
+
+    SO_REUSEADDR lets us restart the server quickly without waiting for
+    the OS to release the port. For each client that connects, we start
+    a daemon thread so the server never blocks waiting on one client
+    while others are trying to connect.
+    """
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))

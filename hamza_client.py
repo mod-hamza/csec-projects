@@ -23,10 +23,26 @@ PORT = 9090
 # ── packet helpers ───────────────────────────────────────────────────────────
 
 def send_pkt(sock, *parts):
+    """
+    Sends a packet to the server.
+
+    Pipes join all the arguments and puts a newline at the end.
+    This is how our protocol works, where every packet is a
+    single line of data with fields separated by pipes. The
+    server reads until the newline character is encountered.
+    Example: send_pkt(sock, 'CM', 'openRead', 'data.txt') sends "CM|openRead|data.txt\n"
+    """
     msg = '|'.join(str(p) for p in parts) + '\n'
     sock.sendall(msg.encode())
 
 def recv_pkt(sock):
+    """
+    Reads one packet from the server and returns a list of fields.
+
+    Keeps reading chunks until we get a newline, which signals the end
+    of the packet. Then we decode, strip whitespace, and split on pipes.
+    Returns an empty list if the server closed the connection.
+    """
     buf = b''
     while not buf.endswith(b'\n'):
         chunk = sock.recv(4096)
@@ -39,6 +55,13 @@ def recv_pkt(sock):
 # ── Caesar cipher ────────────────────────────────────────────────────────────
 
 def caesar(text, shift):
+    """
+    Basic Caesar cipher — shifts each letter by 'shift' positions.
+    Anything that isn't a letter (spaces, numbers, punctuation) stays as-is.
+
+    We use shift=13 (ROT13) as default. Decrypting is just passing -13,
+    so the same function handles both directions.
+    """
     out = []
     for ch in text:
         if ch.isalpha():
@@ -52,12 +75,25 @@ def caesar(text, shift):
 # ── AES cipher ───────────────────────────────────────────────────────────────
 
 def aes_enc(text, key):
+    """
+    Encrypts text with AES-CBC using a random IV each time.
+
+    We prepend the 16-byte IV to the ciphertext before base64-encoding
+    the whole thing into a string. That way the receiver can pull the IV
+    off the front without us needing to send it separately.
+    """
     iv = get_random_bytes(16)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     ct = cipher.encrypt(pad(text.encode(), 16))
     return base64.b64encode(iv + ct).decode()
 
 def aes_dec(b64, key):
+    """
+    Decrypts a base64 string produced by aes_enc.
+
+    We base64-decode first, take the first 16 bytes as the IV,
+    then decrypt the rest and remove the padding to get the original text.
+    """
     raw = base64.b64decode(b64)
     cipher = AES.new(key, AES.MODE_CBC, raw[:16])
     return unpad(cipher.decrypt(raw[16:]), 16).decode()
@@ -66,12 +102,24 @@ def aes_dec(b64, key):
 # ── session state ────────────────────────────────────────────────────────────
 
 class Session:
+    """
+    Stores the encryption state for this connection.
+
+    Once setup() runs, this object knows whether we're encrypted,
+    which algorithm we're using, and what the session key is.
+    enc() and dec() check this before doing anything so they can
+    silently pass through if we're running unencrypted.
+    """
     def __init__(self):
         self.secured = False
         self.algo = None
         self.key = None     # bytes (AES) or int (Caesar)
 
 def enc(text, s):
+    """
+    Encrypts text if the session is secured, otherwise returns it unchanged.
+    Routes to AES or Caesar depending on what was negotiated during setup.
+    """
     if not s.secured:
         return text
     if s.algo == 'AES':
@@ -79,6 +127,12 @@ def enc(text, s):
     return caesar(text, s.key)
 
 def dec(text, s):
+    """
+    Decrypts text if the session is secured.
+    For Caesar, decryption is just a negative shift.
+    If AES decryption fails for any reason, we return the text as-is
+    rather than crashing
+    """
     if not s.secured:
         return text
     if s.algo == 'AES':
@@ -93,6 +147,17 @@ def dec(text, s):
 # Sends SS, waits for CC, then (if secure) sends EC with encrypted session key.
 
 def setup(sock, secure, algo):
+    """
+    Runs the RFMP handshake with the server.
+
+    We send SS to say hello. If we want encryption, the server sends back
+    its RSA public key in the CC packet. We generate a session key (random
+    bytes for AES, or just the number 13 for Caesar), encrypt it with the
+    server's public key, and send it back in EC. From that point on, all
+    data goes through enc()/dec().
+
+    Returns a Session object on success, or None if something went wrong.
+    """
     send_pkt(sock, 'SS', 'RFMP', 'v1.0', '1' if secure else '0')
 
     pkt = recv_pkt(sock)
@@ -135,6 +200,14 @@ def setup(sock, secure, algo):
 # ── display server response ──────────────────────────────────────────────────
 
 def show(pkt, s):
+    """
+    Prints the server's response in a readable format.
+
+    SC means success, DP means file data, EE means error. For SC and DP
+    we try to decrypt the payload first in case the session is encrypted.
+    The try/except on dec() is just for safety: if it fails for some
+    reason, we print what we got rather than crashing.
+    """
     if not pkt:
         print('no response')
         return
@@ -167,6 +240,16 @@ def show(pkt, s):
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    """
+    Entry point it asks for connection details, runs setup, then sits in
+    the command loop until the user quits.
+
+    Commands:
+      prompt <cmd>   — run a shell command on the server
+      read <file>    — read a file from the server
+      write <file>   — write a file to the server (type content, then DONE)
+      quit           — send END and close the connection
+    """
     ip = input(f'server IP [{HOST}]: ').strip() or HOST
     port_in = input(f'port [{PORT}]: ').strip()
     port = int(port_in) if port_in else PORT
